@@ -42,10 +42,14 @@ class Detect(nn.Module):
 
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
+        out = []
         for i in range(self.nl):
-            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-        if self.training:  # Training path
-            return x
+            out.append(self.cv2[i](x[i]))
+            out.append(self.cv3[i](x[i]))
+        return out 
+        
+    def forward_detached(self, x):
+        x = [torch.cat((x[i], x[i+1]), 1) for i in range(0, 6, 2)]
 
         # Inference path
         shape = x[0].shape  # BCHW
@@ -71,7 +75,7 @@ class Detect(nn.Module):
             dbox = dist2bbox(self.dfl(box) * norm, self.anchors.unsqueeze(0) * norm[:, :2], xywh=True, dim=1)
 
         y = torch.cat((dbox, cls.sigmoid()), 1)
-        return y if self.export else (y, x)
+        return y
 
     def bias_init(self):
         """Initialize Detect() biases, WARNING: requires stride availability."""

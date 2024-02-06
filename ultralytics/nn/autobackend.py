@@ -287,6 +287,20 @@ class AutoBackend(nn.Module):
                 with zipfile.ZipFile(w, "r") as model:
                     meta_file = model.namelist()[0]
                     metadata = ast.literal_eval(model.read(meta_file).decode("utf-8"))
+
+            # reoder outputs
+            idx = np.array([sum(details["shape"]) for details in output_details])
+            idx = np.argsort(idx)[::-1]
+            idx = sum(zip(idx[1::2],idx[::2]),())
+            output_details = [output_details[i] for i in idx]
+
+            # load pt model for the unquantized detached head
+            from ultralytics.nn.tasks import attempt_load_weights
+            self.model_pt = attempt_load_weights(attempt_download_asset("yolov8n.pt"), device="cpu", inplace=True)
+            self.model_pt.eval()
+            self.model_pt.float()
+            x_warmup = self.model_pt.forward(torch.empty((1, 3, 640, 640), dtype=torch.float, device="cpu"))  # warmup
+            self.model_pt.model[-1].forward_detached(x_warmup)
         elif tfjs:  # TF.js
             raise NotImplementedError("YOLOv8 TF.js inference is not currently supported.")
         elif paddle:  # PaddlePaddle
@@ -382,6 +396,7 @@ class AutoBackend(nn.Module):
 
         if self.pt or self.nn_module:  # PyTorch
             y = self.model(im, augment=augment, visualize=visualize, embed=embed)
+            y = self.model.model[-1].forward_detached(y)
         elif self.jit:  # TorchScript
             y = self.model(im)
         elif self.dnn:  # ONNX OpenCV DNN
@@ -470,12 +485,14 @@ class AutoBackend(nn.Module):
                     if integer:
                         scale, zero_point = output["quantization"]
                         x = (x.astype(np.float32) - zero_point) * scale  # re-scale
-                    if x.ndim > 2:  # if task is not classification
-                        # Denormalize xywh by image size. See https://github.com/ultralytics/ultralytics/pull/1695
-                        # xywh are normalized in TFLite/EdgeTPU to mitigate quantization error of integer models
-                        x[:, [0, 2]] *= w
-                        x[:, [1, 3]] *= h
+                    # if x.ndim > 2:  # if task is not classification
+                    #     # Denormalize xywh by image size. See https://github.com/ultralytics/ultralytics/pull/1695
+                    #     # xywh are normalized in TFLite/EdgeTPU to mitigate quantization error of integer models
+                    #     x[:, [0, 2]] *= w
+                    #     x[:, [1, 3]] *= h
                     y.append(x)
+                y = [torch.from_numpy(yi.transpose((0, 3, 1, 2))) for yi in y]
+                y = [self.model_pt.model[-1].forward_detached(y)]
             # TF segment fixes: export is reversed vs ONNX export and protos are transposed
             if len(y) == 2:  # segment with (det, proto) output order reversed
                 if len(y[1].shape) != 4:
