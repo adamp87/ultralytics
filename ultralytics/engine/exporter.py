@@ -852,7 +852,8 @@ class Exporter:
         )  # onnx_graphsurgeon only on NVIDIA
 
         f = Path(str(self.file).replace(self.file.suffix, "_saved_model"))
-        f_onnx, _ = self.export_onnx()
+        #f_onnx, _ = self.export_onnx()
+        f_onnx = "yolov8n.onnx"
         saved_model = Path(str(self.file).replace(self.file.suffix, "_saved_model"))
 
         cmd = f'onnx2tf -i "{f_onnx}" -o "{f}" -oh5 --non_verbose'.strip()
