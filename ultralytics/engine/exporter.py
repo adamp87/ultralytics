@@ -840,11 +840,12 @@ class Exporter:
             import tensorflow as tf  # noqa
         check_requirements(
             (
+                "tensorflow==2.13",
                 "onnx",
-                "onnx2tf>=1.15.4,<=1.17.5",
-                "sng4onnx>=1.0.1",
-                "onnxsim>=0.4.33",
-                "onnx_graphsurgeon>=0.3.26",
+                "onnx2tf",
+                "sng4onnx",
+                "onnxsim",
+                "onnx_graphsurgeon",
                 "tflite_support",
                 "onnxruntime-gpu" if cuda else "onnxruntime",
             ),
