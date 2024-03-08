@@ -281,6 +281,7 @@ class Exporter:
             f[4], _ = self.export_coreml()
         if any((saved_model, pb, tflite, edgetpu, tfjs)):  # TensorFlow formats
             self.export_tflite_accuracy() # TODO
+            return
             self.args.int8 |= edgetpu
             f[5], keras_model = self.export_saved_model()
             if pb or tfjs:  # pb prerequisite to tfjs
@@ -787,7 +788,7 @@ class Exporter:
 
         # Remove/rename TFLite models
         if self.args.int8:
-            tmp_file.unlink(missing_ok=True)
+            # tmp_file.unlink(missing_ok=True)
             for file in f.rglob("*_dynamic_range_quant.tflite"):
                 file.rename(file.with_name(file.stem.replace("_dynamic_range_quant", "_int8") + file.suffix))
             for file in f.rglob("*_integer_quant_with_int16_act.tflite"):
@@ -830,6 +831,15 @@ class Exporter:
             f = saved_model / f"{self.file.stem}_float32.tflite"
         return str(f), None
     
+    def representative_dataset(self, dataset):
+        import numpy as np
+        def _data_gen():
+            data=np.load(dataset)
+            for data in data:
+                data=np.expand_dims(data,axis=0)
+                yield [data]
+        return _data_gen
+    
     @try_export
     def export_tflite_accuracy(self, prefix=colorstr("TensorFlow SavedModel:")):
         cuda = torch.cuda.is_available()
@@ -859,58 +869,45 @@ class Exporter:
 
         cmd = f'onnx2tf -i "{f_onnx}" -o "{f}" -oh5 --non_verbose'.strip()
         LOGGER.info(f"{prefix} running '{cmd}'")
-        subprocess.run(cmd, shell=True)
+        #subprocess.run(cmd, shell=True)
 
-        # TODO
-        def representative_dataset():
-            for data in dataset:
-                yield {
-                    "image": data.image,
-                    "bias": data.bias,
-                }
-
-        # def representative_dataset_gen():
-        #     for idx in range(data_count):
-        #         yield_data_dict = {}
-        #         for model_input_name in model_input_name_list:
-        #             calib_data, mean, std = calib_data_dict[model_input_name]
-        #             normalized_calib_data = (calib_data[idx] - mean) / std
-        #             yield_data_dict[model_input_name] = normalized_calib_data
-        #         yield yield_data_dict
+        tmp_file = f / "tmp_tflite_int8_calibration_images.npy"  # int8 calibration images file 
+        dataset = self.representative_dataset(tmp_file)
 
         LOGGER.info(f"{prefix} collecting INT8 calibration images from 'data={self.args.data}'")
-        data = check_det_dataset(self.args.data)
-        dataset = YOLODataset(data["val"], data=data, imgsz=self.imgsz[0], augment=False)
+        # data = check_det_dataset(self.args.data)
+        # dataset = YOLODataset(data["val"], data=data, imgsz=self.imgsz[0], augment=False)
         h5_model = tf.keras.models.load_model(str(saved_model / f"{self.file.stem}_float32.h5"), safe_mode=False)
         converter = tf.lite.TFLiteConverter.from_keras_model(h5_model)
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        converter.representative_dataset = representative_dataset()
+        converter.representative_dataset = dataset
         converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
 
         # my_debug_dataset should have the same format as my_representative_dataset
         f_out = saved_model / f"{self.file.stem}_int8+f32.tflite"
-        opt = tf.lite.experimental.QuantizationDebugOptions(denylisted_ops=[])
+        #opt = tf.lite.experimental.QuantizationDebugOptions(denylisted_ops=["LOGISTIC"])
+        opt = tf.lite.experimental.QuantizationDebugOptions(
+            denylisted_nodes=[
+                "model_18/tf.concat_18/concat",
+                "model_18/tf.strided_slice_17/StridedSlice",
+                "model_18/tf.math.sigmoid_57/Sigmoid",
+                "model_18/tf.math.sigmoid_57/Sigmoid1",
+                "model_18/tf.math.sigmoid_57/Sigmoid2",
+                "model_18/tf.math.divide/truediv;model_18/tf.math.divide/truediv/y1",
+                "model_18/tf.math.subtract_1/Sub",
+                "PartitionedCall:0",
+            ],
+        )
         debugger = tf.lite.experimental.QuantizationDebugger(
             converter=converter,
             debug_options=opt,
-            debug_dataset=representative_dataset()
+            debug_dataset=dataset,
         )
         debugger.run()
         with open(str(f_out), "wb") as f:
             f.write(debugger.get_nondebug_quantized_model())
-        
-        # f_i8 = saved_model / f"{self.file.stem}_int8.tflite"
-        # f_f32 = saved_model / f"{self.file.stem}_float32.tflite"
-        # f_out = saved_model / f"{self.file.stem}_int8+f32.tflite"
-        # opt = tf.lite.experimental.QuantizationDebugOptions(denylisted_ops=["model_3/tf.concat_593/concat"])
-        # conv = tf.lite.experimental.QuantizationDebugger(
-        #     quant_debug_model_path=str(f_i8),
-        #     float_model_path=str(f_f32),
-        #     debug_options=opt
-        # )
-        # conv.run()
-        # with open(str(f_out), "wb") as f:
-        #     f.write(conv.get_nondebug_quantized_model())
+
+        return f, None
 
     @try_export
     def export_edgetpu(self, tflite_model="", prefix=colorstr("Edge TPU:")):
